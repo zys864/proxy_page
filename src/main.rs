@@ -3,7 +3,7 @@ pub mod tokiort;
 use std::{net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
-use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
+use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
@@ -15,7 +15,8 @@ use tokiort::TokioIo;
 type ClientBuilder = hyper::client::conn::http1::Builder;
 type ServerBuilder = hyper::server::conn::http1::Builder;
 
-use tracing::{debug, error, info};
+use tracing::level_filters::LevelFilter;
+use tracing::{debug, error, info, instrument};
 use tracing_subscriber::EnvFilter;
 
 // To try this example:
@@ -37,22 +38,24 @@ struct Config {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Initialize tracing subscriber; set RUST_LOG or the default to control level:
-    //   RUST_LOG=debug cargo run
+async fn main() -> Result<(), anyhow::Error> {
+    // Initialize tracing subscriber; include file and line number in logs.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_file(true)               // show source file
+        .with_line_number(true)        // show line number
+        .with_env_filter(EnvFilter::builder()
+            .with_default_directive(LevelFilter::INFO.into())
+            .from_env_lossy())
         .init();
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
-
+    info!(msg = "Proxy Start Listening", ?addr);
     // 读取并解析 proxy.toml（位于项目根）
     let cfg_str = std::fs::read_to_string("proxy.toml")?;
     let cfg: Config = toml::from_str(&cfg_str)?;
     let cfg = Arc::new(cfg);
 
     let listener = TcpListener::bind(addr).await?;
-    info!("Listening on http://{}", addr);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -74,6 +77,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
+#[instrument(skip(cfg))]
 async fn proxy(
     req: Request<hyper::body::Incoming>,
     cfg: Arc<Config>,
@@ -149,10 +153,13 @@ async fn proxy(
             format!("{}:{}", host, port)
         };
 
-        let stream = TcpStream::connect(target).await.map_err(|e| {
-            error!("connect backend error: {}", e);
-            e
-        }).unwrap();
+        let stream = TcpStream::connect(target)
+            .await
+            .map_err(|e| {
+                error!("connect backend error: {}", e);
+                e
+            })
+            .unwrap();
         let io = TokioIo::new(stream);
 
         let (mut sender, conn) = ClientBuilder::new()
@@ -171,6 +178,7 @@ async fn proxy(
     }
 }
 
+#[instrument(skip(upgraded), level = "info")]
 // Create a TCP connection to host:port, build a tunnel between the connection and
 // the upgraded connection
 async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
@@ -182,7 +190,6 @@ async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
     let (from_client, from_server) =
         tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
 
-    // Print message when done
     info!(
         "client wrote {} bytes and received {} bytes",
         from_client, from_server
