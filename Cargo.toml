@@ -3,5 +3,7 @@ name = "proxy_page"
 version = "0.1.0"
 edition = "2024"
 repository = "https://github.com/zys864/proxy_page.git"
+description = "A simple proxy page generator"
+license = "Apache-2.0 OR MIT"
 
 [dependencies]
