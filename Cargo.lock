@@ -257,8 +257,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
+ "http",
  "http-body-util",
  "hyper",
+ "pin-project-lite",
  "serde",
  "tokio",
  "toml",

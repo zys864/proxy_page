@@ -1,5 +1,5 @@
 #![deny(warnings)]
-
+pub mod tokiort;
 use std::net::SocketAddr;
 
 use bytes::Bytes;
@@ -10,7 +10,7 @@ use hyper::{Method, Request, Response};
 
 use tokio::net::{TcpListener, TcpStream};
 
-
+use tokiort::TokioIo;
 type ClientBuilder = hyper::client::conn::http1::Builder;
 type ServerBuilder = hyper::server::conn::http1::Builder;
 
