@@ -7,3 +7,8 @@ description = "A simple proxy page generator"
 license = "Apache-2.0 OR MIT"
 
 [dependencies]
+tokio = { version = "1", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.7"
+bytes = "1"
