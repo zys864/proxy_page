@@ -1,6 +1,7 @@
 pub mod tokiort;
 use std::{net::SocketAddr, sync::Arc};
 
+use anyhow::Context;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Empty, Full, combinators::BoxBody};
 use hyper::service::service_fn;
@@ -83,7 +84,7 @@ async fn main() -> Result<(), anyhow::Error> {
 async fn proxy(
     req: Request<hyper::body::Incoming>,
     cfg: Arc<Config>,
-) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+) -> Result<Response<BoxBody<Bytes, hyper::Error>>, anyhow::Error> {
     debug!("req: {:?}", req);
 
     // helper: find backend by host according to cfg rules
@@ -125,7 +126,7 @@ async fn proxy(
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
                         if let Err(e) = tunnel(upgraded, backend_addr).await {
-                            error!("server io error: {}", e);
+                            error!(msg = "server io error", ?e);
                         };
                     }
                     Err(e) => error!("upgrade error: {}", e),
@@ -203,7 +204,8 @@ async fn resolve_and_connect(addr: &str) -> std::io::Result<TcpStream> {
         }
         Err(e) => {
             error!("DNS resolution error for {}: {}", addr, e);
-            Err(e)},
+            Err(e)
+        }
     }
 }
 
@@ -212,12 +214,16 @@ async fn resolve_and_connect(addr: &str) -> std::io::Result<TcpStream> {
 // the upgraded connection
 async fn tunnel(upgraded: Upgraded, addr: String) -> anyhow::Result<()> {
     // Connect to remote server using async DNS resolution (supports domain names)
-    let mut server = resolve_and_connect(&addr).await?;
+    let mut server = resolve_and_connect(&addr)
+        .await
+        .with_context(|| format!("resolve_and_connect error,addr={addr}"))?;
     let mut upgraded = TokioIo::new(upgraded);
 
     // Proxying data
     let (from_client, from_server) =
-        tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
+        tokio::io::copy_bidirectional(&mut upgraded, &mut server).await
+        .with_context(||format!("copy_bidirectional error,addr={addr}"))
+        ?;
 
     info!(
         "client wrote {} bytes and received {} bytes",
