@@ -1,6 +1,6 @@
 #![deny(warnings)]
 pub mod tokiort;
-use std::net::SocketAddr;
+use std::{net::SocketAddr, sync::Arc};
 
 use bytes::Bytes;
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full};
@@ -8,6 +8,7 @@ use hyper::service::service_fn;
 use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
 
+use serde::Deserialize;
 use tokio::net::{TcpListener, TcpStream};
 
 use tokiort::TokioIo;
@@ -21,9 +22,25 @@ type ServerBuilder = hyper::server::conn::http1::Builder;
 //    $ export https_proxy=http://127.0.0.1:8100
 // 3. send requests
 //    $ curl -i https://www.some_domain.com/
+#[derive(Deserialize, Clone)]
+struct Route {
+    host: String,    // 支持以 '.' 开头表示 suffix 匹配，如 ".example.com"
+    backend: String, // 后端地址，可以是 "1.2.3.4:8080" 或 "backend.internal"（若无端口使用请求端口）
+}
+
+#[derive(Deserialize, Clone)]
+struct Config {
+    routes: Vec<Route>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
+
+    // 读取并解析 proxy.toml（位于项目根）
+    let cfg_str = std::fs::read_to_string("proxy.toml")?;
+    let cfg: Config = toml::from_str(&cfg_str)?;
+    let cfg = Arc::new(cfg);
 
     let listener = TcpListener::bind(addr).await?;
     println!("Listening on http://{}", addr);
@@ -31,12 +48,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
+        let cfg_clone = cfg.clone();
 
         tokio::task::spawn(async move {
             if let Err(err) = ServerBuilder::new()
                 .preserve_header_case(true)
                 .title_case_headers(true)
-                .serve_connection(io, service_fn(proxy))
+                // 把配置捕获到每个连接的 service 中
+                .serve_connection(io, service_fn(move |req| proxy(req, cfg_clone.clone())))
                 .with_upgrades()
                 .await
             {
@@ -48,28 +67,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn proxy(
     req: Request<hyper::body::Incoming>,
+    cfg: Arc<Config>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
     println!("req: {:?}", req);
 
+    // helper: find backend by host according to cfg rules
+    fn find_backend<'a>(host: &str, cfg: &'a Config) -> Option<&'a str> {
+        for r in &cfg.routes {
+            if r.host.starts_with('.') {
+                let suf = &r.host[1..];
+                if host.ends_with(suf) {
+                    return Some(r.backend.as_str());
+                }
+            } else if r.host == host {
+                return Some(r.backend.as_str());
+            }
+        }
+        None
+    }
+
     if Method::CONNECT == req.method() {
-        // Received an HTTP request like:
-        // ```
-        // CONNECT www.domain.com:443 HTTP/1.1
-        // Host: www.domain.com:443
-        // Proxy-Connection: Keep-Alive
-        // ```
-        //
-        // When HTTP method is CONNECT we should return an empty body
-        // then we can eventually upgrade the connection and talk a new protocol.
-        //
-        // Note: only after client received an empty body with STATUS_OK can the
-        // connection be upgraded, so we can't return a response inside
-        // `on_upgrade` future.
-        if let Some(addr) = host_addr(req.uri()) {
+        // CONNECT target like "host:port"
+        if let Some(orig_addr) = host_addr(req.uri()) {
+            // extract host part to match rules
+            let host_part = orig_addr.split(':').next().unwrap_or(&orig_addr);
+            let port_part = orig_addr.split(':').nth(1).map(|s| s.to_string());
+
+            // determine backend address
+            let backend_addr = if let Some(b) = find_backend(host_part, &cfg) {
+                if b.contains(':') {
+                    b.to_string()
+                } else if let Some(p) = port_part {
+                    format!("{}:{}", b, p)
+                } else {
+                    b.to_string()
+                }
+            } else {
+                orig_addr.clone()
+            };
+
             tokio::task::spawn(async move {
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
-                        if let Err(e) = tunnel(upgraded, addr).await {
+                        if let Err(e) = tunnel(upgraded, backend_addr).await {
                             eprintln!("server io error: {}", e);
                         };
                     }
@@ -86,10 +126,24 @@ async fn proxy(
             Ok(resp)
         }
     } else {
+        // normal HTTP request: use req.uri() host/port to decide backend
         let host = req.uri().host().expect("uri has no host");
         let port = req.uri().port_u16().unwrap_or(80);
 
-        let stream = TcpStream::connect((host, port)).await.unwrap();
+        let target = if let Some(b) = find_backend(host, &cfg) {
+            if b.contains(':') {
+                b.to_string()
+            } else {
+                format!("{}:{}", b, port)
+            }
+        } else {
+            format!("{}:{}", host, port)
+        };
+
+        let stream = TcpStream::connect(target).await.map_err(|e| {
+            eprintln!("connect backend error: {}", e);
+            e
+        }).unwrap();
         let io = TokioIo::new(stream);
 
         let (mut sender, conn) = ClientBuilder::new()

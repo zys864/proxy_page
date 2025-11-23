@@ -1,2 +1,15 @@
 bind = "127.0.0.1:8080"
 # future options: allowed_hosts = ["example.com"], auth = { user = "...", pass = "..." }
+
+# 路由规则示例：host -> backend
+# host 以 '.' 开头表示后缀匹配，如 ".example.com" 匹配 api.example.com
+# backend 可以包含端口（如 "10.0.0.5:8080"）或不含端口（如 "backend.internal"），
+# 若不含端口则使用请求的端口（HTTP 默认 80，CONNECT 常带 443 等）。
+
+routes = [
+  { host = ".example.com", backend = "10.0.0.5:8080" },   # 后缀匹配，带端口
+  { host = "api.internal", backend = "172.16.0.2" },      # 精确匹配，无端口 -> 使用请求端口
+  { host = ".service.local", backend = "10.1.2.3:8000" },  # 另一个后缀规则
+  { host = "static.site", backend = "192.0.2.10:8080" },   # 精确匹配，带端口
+  { host = "storage.googleapis.com", backend = "1storage.flutter-io.cn" }
+]
