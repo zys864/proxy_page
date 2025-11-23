@@ -1,4 +1,3 @@
-
 pub mod tokiort;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -9,7 +8,7 @@ use hyper::upgrade::Upgraded;
 use hyper::{Method, Request, Response};
 
 use serde::Deserialize;
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{TcpListener, TcpStream, lookup_host};
 
 use tokiort::TokioIo;
 type ClientBuilder = hyper::client::conn::http1::Builder;
@@ -48,6 +47,7 @@ async fn main() -> Result<(), anyhow::Error> {
                 .with_default_directive(LevelFilter::INFO.into())
                 .from_env_lossy(),
         )
+        .pretty()
         .init();
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
@@ -79,7 +79,7 @@ async fn main() -> Result<(), anyhow::Error> {
     }
 }
 
-#[instrument(skip(cfg))]
+#[instrument(skip(cfg),fields(uri = %req.uri(), method = %req.method()))]
 async fn proxy(
     req: Request<hyper::body::Incoming>,
     cfg: Arc<Config>,
@@ -155,7 +155,8 @@ async fn proxy(
             format!("{}:{}", host, port)
         };
 
-        let stream = TcpStream::connect(target)
+        // 使用异步解析并连接（支持域名）
+        let stream = resolve_and_connect(&target)
             .await
             .map_err(|e| {
                 error!("connect backend error: {}", e);
@@ -180,12 +181,38 @@ async fn proxy(
     }
 }
 
+// 新增：异步解析域名并连接（支持直接 IP:PORT 或 域名:port）
+async fn resolve_and_connect(addr: &str) -> std::io::Result<TcpStream> {
+    // 如果已经是 SocketAddr 格式，直接解析并连接第一个
+    if let Ok(sock) = addr.parse::<std::net::SocketAddr>() {
+        return TcpStream::connect(sock).await;
+    }
+
+    // 否则使用异步 DNS 解析 host:port
+    match lookup_host(addr).await {
+        Ok(mut addrs) => {
+            if let Some(sock) = addrs.next() {
+                info!("Resolved {} to {}", addr, sock);
+                TcpStream::connect(sock).await
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "no addresses found for host",
+                ))
+            }
+        }
+        Err(e) => {
+            error!("DNS resolution error for {}: {}", addr, e);
+            Err(e)},
+    }
+}
+
 #[instrument(skip(upgraded), level = "info")]
 // Create a TCP connection to host:port, build a tunnel between the connection and
 // the upgraded connection
 async fn tunnel(upgraded: Upgraded, addr: String) -> anyhow::Result<()> {
-    // Connect to remote server
-    let mut server = TcpStream::connect(addr).await?;
+    // Connect to remote server using async DNS resolution (supports domain names)
+    let mut server = resolve_and_connect(&addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
 
     // Proxying data

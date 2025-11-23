@@ -11,5 +11,5 @@ routes = [
   { host = "api.internal", backend = "172.16.0.2" },      # 精确匹配，无端口 -> 使用请求端口
   { host = ".service.local", backend = "10.1.2.3:8000" },  # 另一个后缀规则
   { host = "static.site", backend = "192.0.2.10:8080" },   # 精确匹配，带端口
-  { host = "storage.googleapis.com", backend = "1storage.flutter-io.cn" }
+  { host = "storage.googleapis.com", backend = "storage.flutter-io.cn" }
 ]
