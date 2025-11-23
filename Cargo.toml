@@ -8,7 +8,9 @@ license = "Apache-2.0 OR MIT"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-hyper = { version = "0.14", features = ["full"] }
+hyper = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
-toml = "0.7"
+toml = "0.9.8"
+anyhow = "1.0"
 bytes = "1"
+http-body-util = "0.1.3"
