@@ -1,4 +1,4 @@
-#![deny(warnings)]
+
 pub mod tokiort;
 use std::{net::SocketAddr, sync::Arc};
 
@@ -41,11 +41,13 @@ struct Config {
 async fn main() -> Result<(), anyhow::Error> {
     // Initialize tracing subscriber; include file and line number in logs.
     tracing_subscriber::fmt()
-        .with_file(true)               // show source file
-        .with_line_number(true)        // show line number
-        .with_env_filter(EnvFilter::builder()
-            .with_default_directive(LevelFilter::INFO.into())
-            .from_env_lossy())
+        .with_file(true) // show source file
+        .with_line_number(true) // show line number
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
         .init();
 
     let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
@@ -181,7 +183,7 @@ async fn proxy(
 #[instrument(skip(upgraded), level = "info")]
 // Create a TCP connection to host:port, build a tunnel between the connection and
 // the upgraded connection
-async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
+async fn tunnel(upgraded: Upgraded, addr: String) -> anyhow::Result<()> {
     // Connect to remote server
     let mut server = TcpStream::connect(addr).await?;
     let mut upgraded = TokioIo::new(upgraded);
