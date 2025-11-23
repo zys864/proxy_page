@@ -15,6 +15,9 @@ use tokiort::TokioIo;
 type ClientBuilder = hyper::client::conn::http1::Builder;
 type ServerBuilder = hyper::server::conn::http1::Builder;
 
+use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
+
 // To try this example:
 // 1. cargo run --example http_proxy
 // 2. config http_proxy in command line
@@ -35,6 +38,12 @@ struct Config {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing subscriber; set RUST_LOG or the default to control level:
+    //   RUST_LOG=debug cargo run
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
     let addr = SocketAddr::from(([127, 0, 0, 1], 8100));
 
     // 读取并解析 proxy.toml（位于项目根）
@@ -43,7 +52,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cfg = Arc::new(cfg);
 
     let listener = TcpListener::bind(addr).await?;
-    println!("Listening on http://{}", addr);
+    info!("Listening on http://{}", addr);
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -59,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .with_upgrades()
                 .await
             {
-                println!("Failed to serve connection: {:?}", err);
+                error!("Failed to serve connection: {:?}", err);
             }
         });
     }
@@ -69,7 +78,7 @@ async fn proxy(
     req: Request<hyper::body::Incoming>,
     cfg: Arc<Config>,
 ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
-    println!("req: {:?}", req);
+    debug!("req: {:?}", req);
 
     // helper: find backend by host according to cfg rules
     fn find_backend<'a>(host: &str, cfg: &'a Config) -> Option<&'a str> {
@@ -110,16 +119,16 @@ async fn proxy(
                 match hyper::upgrade::on(req).await {
                     Ok(upgraded) => {
                         if let Err(e) = tunnel(upgraded, backend_addr).await {
-                            eprintln!("server io error: {}", e);
+                            error!("server io error: {}", e);
                         };
                     }
-                    Err(e) => eprintln!("upgrade error: {}", e),
+                    Err(e) => error!("upgrade error: {}", e),
                 }
             });
 
             Ok(Response::new(empty()))
         } else {
-            eprintln!("CONNECT host is not socket addr: {:?}", req.uri());
+            error!("CONNECT host is not socket addr: {:?}", req.uri());
             let mut resp = Response::new(full("CONNECT must be to a socket address"));
             *resp.status_mut() = http::StatusCode::BAD_REQUEST;
 
@@ -141,7 +150,7 @@ async fn proxy(
         };
 
         let stream = TcpStream::connect(target).await.map_err(|e| {
-            eprintln!("connect backend error: {}", e);
+            error!("connect backend error: {}", e);
             e
         }).unwrap();
         let io = TokioIo::new(stream);
@@ -153,13 +162,33 @@ async fn proxy(
             .await?;
         tokio::task::spawn(async move {
             if let Err(err) = conn.await {
-                println!("Connection failed: {:?}", err);
+                error!("Connection failed: {:?}", err);
             }
         });
 
         let resp = sender.send_request(req).await?;
         Ok(resp.map(|b| b.boxed()))
     }
+}
+
+// Create a TCP connection to host:port, build a tunnel between the connection and
+// the upgraded connection
+async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
+    // Connect to remote server
+    let mut server = TcpStream::connect(addr).await?;
+    let mut upgraded = TokioIo::new(upgraded);
+
+    // Proxying data
+    let (from_client, from_server) =
+        tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
+
+    // Print message when done
+    info!(
+        "client wrote {} bytes and received {} bytes",
+        from_client, from_server
+    );
+
+    Ok(())
 }
 
 fn host_addr(uri: &http::Uri) -> Option<String> {
@@ -176,24 +205,4 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody<Bytes, hyper::Error> {
     Full::new(chunk.into())
         .map_err(|never| match never {})
         .boxed()
-}
-
-// Create a TCP connection to host:port, build a tunnel between the connection and
-// the upgraded connection
-async fn tunnel(upgraded: Upgraded, addr: String) -> std::io::Result<()> {
-    // Connect to remote server
-    let mut server = TcpStream::connect(addr).await?;
-    let mut upgraded = TokioIo::new(upgraded);
-
-    // Proxying data
-    let (from_client, from_server) =
-        tokio::io::copy_bidirectional(&mut upgraded, &mut server).await?;
-
-    // Print message when done
-    println!(
-        "client wrote {} bytes and received {} bytes",
-        from_client, from_server
-    );
-
-    Ok(())
 }
